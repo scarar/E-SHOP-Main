@@ -1,72 +1,55 @@
 <?php
-// Check if user is not logged in, redirect him to login page
+require_once 'functions.php';
+
 session_start();
-if(isset($_SESSION['user']) && $_SESSION['user']!=''){
-    header('Location:http://'.$_SERVER["HTTP_HOST"].'/');
-    exit();
+if(isset($_SESSION['user']) && $_SESSION['user'] !== '') {
+    redirect('index.php');
 }
-//for enabling PGP for users who have enabled PGP Login
+
 $enable_pgp_login = false;
+$message = '';
 
 if(isset($_POST['login'])) {
-    include('securimage-master/securimage.php');
+    if (!verify_csrf_token($_POST['csrf_token'])) {
+        $message = '<div id="message" class="alert alert-danger">Invalid request</div>';
+    } else {
+        include('securimage-master/securimage.php');
+        $securimage = new Securimage();
+        
+        if ($securimage->check($_POST['captcha_code']) == false) {
+            $message = '<div id="message" class="alert alert-warning">The security code entered was incorrect.</div>';
+        } else {
+            $username = sanitize_input($_POST['username']);
+            $password = $_POST['password'];
 
-    $securimage = new Securimage();
-    if ($securimage->check($_POST['captcha_code']) == false) {
-        // the code was incorrect
-        // you should handle the error so that the form processor doesn't continue
-        // or you can use the following code if there is no validation or you do not know how
-        $message = '<div id="message" class="alert alert-warning">';
-        $message .= 'The security code entered was incorrect.';
-        $message .= '</div>';
-    }else{
-        //echo 'TRUE:'.$_POST['captcha_code'];
-        $db_array = include("../../../etc/return_db_array.php");
-        $conn = @mysqli_connect("localhost", $db_array['db_user'], $db_array['db_password'], $db_array['db_name']);
-        if (!$conn) {
-            die("ERROR: Unable to connect: " . $conn->connect_error);
-        }
-        //     echo 'u:'.$_POST['username'];
-        //   echo 'u:'.$_POST['password'];
+            if ($username !== '' && $password !== '') {
+                try {
+                    $db = get_db_connection();
+                    $stmt = $db->prepare("SELECT * FROM users WHERE username = ? LIMIT 1");
+                    $stmt->execute([$username]);
+                    $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        //get user credentials and process login request
-        if ($_POST['username'] !== '' && $_POST['password'] !== '') {
-            //get username and password using username, {loading SINGLE USER only}
-            $sql = 'SELECT * FROM users WHERE username="' . $_POST['username'] . '" LIMIT 1';
-            $result = $conn->query($sql);
-            if ($result->num_rows > 0) {
-                //if username was found, match the password
-                // get row data
-                while ($row = $result->fetch_assoc()) {
-                    //decrypt password and match with user input
-                    if (password_verify($_POST['password'], $row["password_hash"])) {
-                        //login
-                        if($row["2fa_enabled"] == 'NULL' OR $row["2fa_enabled"] == 0){
-                            $_SESSION['user'] = $row["username"];
-                            header("Location:/");
-                            exit;
-                        }else{
-                            //2fa enabled
+                    if ($user && verify_password($password, $user["password_hash"])) {
+                        if($user["2fa_enabled"] == 'NULL' || $user["2fa_enabled"] == 0) {
+                            $_SESSION['user'] = $user["username"];
+                            $_SESSION['user_id'] = $user["id"];
+                            $_SESSION['last_login'] = time();
+                            redirect('index.php');
+                        } else {
                             $enable_pgp_login = true;
-                            $pub_key = $row["public_key"];
-                            $hiddenusername = $row["username"];
+                            $pub_key = $user["public_key"];
+                            $hiddenusername = $user["username"];
                         }
-
                     } else {
-                        $message = '<div id="message" class="alert alert-warning">';
-                        $message .= 'Wrong Password';
-                        $message .= '</div>';
+                        $message = '<div id="message" class="alert alert-warning">Invalid username or password</div>';
                     }
+                } catch (PDOException $e) {
+                    $message = '<div id="message" class="alert alert-danger">An error occurred. Please try again later.</div>';
+                    error_log("Login error: " . $e->getMessage());
                 }
-            }else{
-                $message = '<div id="message" class="alert alert-warning">';
-                $message .= 'Account doesn\'t exist';
-                $message .= '</div>';
+            } else {
+                $message = '<div id="message" class="alert alert-warning">Please fill in all required fields</div>';
             }
-        }else{
-                $message = '<div id="message" class="alert alert-warning">';
-                $message .= 'Please fill in the required fields';
-                $message .= '</div>';
         }
     }
 }
@@ -109,19 +92,20 @@ include('parts/main_menu.php');
             <h3>Login</h3>
             <form class="form" action="login.php" method="post">
                 <?php echo $message;?>
-                <label class="return_message" id="return_message"></label>
+                <input type="hidden" name="csrf_token" value="<?php echo generate_csrf_token(); ?>">
                 <label for="username">Username:</label>
-                <input type="text" class="form-control" id="username" name="username"/>
+                <input type="text" class="form-control" id="username" name="username" required/>
                 <br/>
                 <label for="password">Password:</label>
-                <input type="password" class="form-control" id="password" name="password"/>
+                <input type="password" class="form-control" id="password" name="password" required/>
                 <br/>
                 <img id="captcha" style="min-width: 100%;margin-top: 10px;" src="/securimage-master/securimage_show.php" alt="CAPTCHA Image" />
+                <a href="#" onclick="document.getElementById('captcha').src = '/securimage-master/securimage_show.php?' + Math.random(); return false">Refresh</a>
                 <br/>
-                <input type="text" style="min-width: 100%;margin-top: 10px;" name="captcha_code" size="10" maxlength="6" />
+                <input type="text" style="min-width: 100%;margin-top: 10px;" name="captcha_code" size="10" maxlength="6" required placeholder="Enter the code above"/>
                 <br/>
-                    <br/>
-                <input id="login" name="login" type="submit" class="btn btn-primary form-control" value="login">
+                <br/>
+                <input id="login" name="login" type="submit" class="btn btn-primary form-control" value="Login">
             </form>
         <?php
         }
